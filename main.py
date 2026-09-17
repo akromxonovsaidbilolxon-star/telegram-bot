@@ -1,35 +1,81 @@
+import json
 import os
+from pathlib import Path
+
 import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# 1. Authenticate with Google Sheets
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
-client = gspread.authorize(creds)
 
-# 2. Connect to the workbook (update the name if your sheet is called something else)
-sheet = client.open("Policy Pulse").sheet1 
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def connect_to_sheet():
+    """Create a Google Sheets connection using a local file or JSON environment variable."""
+    credentials_file = os.getenv(
+        "GOOGLE_CREDENTIALS_FILE",
+        str(BASE_DIR / "credentials.json"),
+    )
+    credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+    try:
+        if credentials_json:
+            credentials_info = json.loads(credentials_json)
+            creds = Credentials.from_service_account_info(
+                credentials_info,
+                scopes=SCOPES,
+            )
+        else:
+            credentials_path = Path(credentials_file)
+            if not credentials_path.exists():
+                raise FileNotFoundError(
+                    f"Google credentials file not found: {credentials_path}. "
+                    "Set GOOGLE_CREDENTIALS_JSON or add credentials.json."
+                )
+            creds = Credentials.from_service_account_file(
+                str(credentials_path),
+                scopes=SCOPES,
+            )
+
+        client = gspread.authorize(creds)
+        spreadsheet_name = os.getenv("GOOGLE_SHEET_NAME", "Policy Pulse")
+        return client.open(spreadsheet_name).sheet1
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not connect to Google Sheets. Check the credentials, "
+            "spreadsheet name, and sharing permissions."
+        ) from exc
+
+
+sheet = connect_to_sheet()
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ready to log driver statuses and equipment swaps.")
+    await update.message.reply_text(
+        "Ready to log driver statuses and equipment swaps."
+    )
+
 
 async def log_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_text = update.message.text
-    # Appends the incoming log to the next available row in the sheet
-    sheet.append_row([log_text]) 
+    sheet.append_row([log_text])
     await update.message.reply_text("Event securely logged to the spreadsheet.")
 
-def main():
-    # Render will automatically inject your token here later
-    token = os.environ.get("TELEGRAM_TOKEN")
-    app = Application.builder().token(token).build()
 
+def main():
+    token = os.getenv("TELEGRAM_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "TELEGRAM_TOKEN is not set. Configure it as an environment variable."
+        )
+
+    app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_event))
-    
     app.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
